@@ -59,13 +59,11 @@ class FASPublicationScraper:
     
     def _initialize_csv(self):
         """Initialize the CSV file with headers if it doesn't exist."""
-        file_exists = os.path.isfile(self.output_file)
-        
-        with open(self.output_file, 'a', newline='') as csvfile:
+        # Always start with a fresh file to ensure headers are included
+        with open(self.output_file, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
-            if not file_exists:
-                writer.writerow(['URL', 'Page'])
-                self.logger.info(f"Initialized CSV file: {self.output_file}")
+            writer.writerow(['URL', 'Page'])
+            self.logger.info(f"Initialized CSV file: {self.output_file}")
     
     def _append_to_csv(self, urls, page_num):
         """
@@ -131,10 +129,20 @@ class FASPublicationScraper:
         # Based on the observed structure of the FAS publications archive page
         for link in soup.find_all('a', href=True):
             href = link['href']
-            # Match only publication URLs - FIXED REGEX
-            if re.match(r'https://fas\.org/publication/[^/]+/?$', href):
-                if href not in urls:
-                    urls.append(href)
+            full_url = href if href.startswith('http') else urljoin(self.base_url, href)
+            
+            # Pattern to ignore
+            excluded_patterns = [
+                'https://fas.org/publications/',
+                'https://fas.org/publications-archive/'
+            ]
+            
+            # Check if the URL contains /publication/ (singular) and doesn't match any excluded patterns
+            if 'https://fas.org/publication/' in full_url:
+                # Make sure it's not a match for any excluded patterns
+                if not any(full_url.startswith(pattern) for pattern in excluded_patterns):
+                    if full_url not in urls:
+                        urls.append(full_url)
         
         self.logger.info(f"Found {len(urls)} publication URLs on page")
         return urls
@@ -152,36 +160,75 @@ class FASPublicationScraper:
         if not soup:
             return None
             
-        # Look for pagination links - might be 'Next' or a number
-        pagination_elements = soup.find_all('a', class_=lambda x: x and ('pagination' in x or 'next' in x.lower()))
-        
-        for element in pagination_elements:
-            text = element.get_text().lower()
-            if 'next' in text or '»' in text:
-                return urljoin(self.base_url, element['href'])
-        
-        # Alternative approach: look for page numbers and find the highest one
-        page_links = soup.find_all('a', href=lambda href: href and 'page' in href)
-        highest_page = 0
-        next_page_url = None
-        
-        for link in page_links:
-            match = re.search(r'/page/(\d+)/?', link['href'])
-            if match:
-                page_num = int(match.group(1))
-                if page_num > highest_page:
-                    highest_page = page_num
-                    next_page_url = link['href']
-        
-        if highest_page > 0:
-            # Check if we're already on this page
-            current_page_match = re.search(r'/page/(\d+)/?', self.base_url)
-            current_page = int(current_page_match.group(1)) if current_page_match else 1
+        # Debug current page content
+        self.logger.info(f"Looking for pagination elements on current page")
             
-            if highest_page > current_page:
-                return urljoin(self.base_url, next_page_url)
+        # First look specifically for the next page link
+        # Look broadly for any elements that might be pagination controls
+        pagination_wrappers = soup.find_all(['div', 'nav', 'ul'], class_=lambda x: x and any(
+            term in str(x).lower() for term in ['pagination', 'pager', 'nav', 'page-numbers']
+        ))
         
-        return None
+        for wrapper in pagination_wrappers:
+            # Within these wrappers, look for links that might be "next page"
+            next_links = wrapper.find_all('a', 
+                string=lambda x: x and any(term in str(x).lower() for term in ['next', 'more', '»', '>', '→']),
+                href=True
+            )
+            
+            if next_links:
+                next_url = urljoin(self.base_url, next_links[0]['href'])
+                self.logger.info(f"Found next page link: {next_url}")
+                return next_url
+                
+            # If no explicit next link, look for numbered page links
+            page_links = wrapper.find_all('a', href=lambda href: href and ('page' in href or re.search(r'[?&]p=\d+', href)))
+            
+            if page_links:
+                current_page = self._get_current_page_number()
+                next_page = current_page + 1
+                
+                # Look for a link to the next page number
+                for link in page_links:
+                    page_match = re.search(r'/page/(\d+)|[?&]p=(\d+)', link['href'])
+                    if page_match:
+                        page_num = int(page_match.group(1) or page_match.group(2))
+                        if page_num == next_page:
+                            next_url = urljoin(self.base_url, link['href'])
+                            self.logger.info(f"Found link to page {next_page}: {next_url}")
+                            return next_url
+        
+        # If we couldn't find a next link, try to construct one
+        current_page = self._get_current_page_number()
+        next_page = current_page + 1
+        
+        # Try different URL patterns for next page
+        possible_next_urls = [
+            f"{self.base_url.rstrip('/')}/page/{next_page}/",
+            f"{self.base_url}?paged={next_page}",
+            f"{self.base_url}?page={next_page}",
+            f"{self.base_url}?p={next_page}"
+        ]
+        
+        self.logger.info(f"Trying constructed URLs for page {next_page}")
+        return possible_next_urls[0]  # Return the first pattern (can be adjusted based on website)
+    
+    def _get_current_page_number(self):
+        """Extract the current page number from the base URL or default to 1."""
+        # Try different patterns for page number in URL
+        patterns = [
+            r'/page/(\d+)/?',
+            r'[?&]p=(\d+)',
+            r'[?&]page=(\d+)',
+            r'[?&]paged=(\d+)'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, self.base_url)
+            if match:
+                return int(match.group(1))
+                
+        return 1  # Default to page 1
     
     def scrape_all_publications(self, max_pages=None):
         """
@@ -198,18 +245,37 @@ class FASPublicationScraper:
         
         current_url = self.base_url
         page_num = 1
+        consecutive_empty_pages = 0
+        max_empty_pages = 3  # Stop after 3 consecutive pages with no publications
         
         while current_url:
             max_page_str = f"/{max_pages}" if max_pages else ""
-            self.logger.info(f"Processing page {page_num}{max_page_str}")
+            self.logger.info(f"Processing page {page_num}{max_page_str}: {current_url}")
             soup = self.fetch_page(current_url)
             
             if not soup:
                 self.logger.error(f"Failed to fetch page {page_num}{max_page_str}, stopping")
                 break
                 
+            # Check if the page seems to be a valid publications page
+            # Look for indicators like titles, section headings, etc.
+            page_titles = soup.find_all(['h1', 'h2'], string=lambda s: s and 'publication' in s.lower())
+            if not page_titles:
+                self.logger.warning(f"Page {page_num} doesn't appear to have publication headings")
+            
             # Extract publications from this page
             page_publications = self.extract_publications_from_page(soup)
+            
+            # Track consecutive empty pages
+            if not page_publications:
+                consecutive_empty_pages += 1
+                self.logger.warning(f"Page {page_num} had no publications. Empty pages so far: {consecutive_empty_pages}/{max_empty_pages}")
+                
+                if consecutive_empty_pages >= max_empty_pages:
+                    self.logger.warning(f"Reached {consecutive_empty_pages} consecutive pages with no publications, stopping")
+                    break
+            else:
+                consecutive_empty_pages = 0  # Reset counter when we find publications
             
             # Add these URLs to our master list
             self.publication_urls.extend(page_publications)
@@ -228,6 +294,7 @@ class FASPublicationScraper:
             # If we didn't find a next page link, try adding /page/X to the base URL
             if not next_page_url and page_num == 1:
                 next_page_url = f"{self.base_url.rstrip('/')}/page/2/"
+                self.logger.info(f"Defaulting to standard page 2 URL: {next_page_url}")
                 
             if next_page_url == current_url:
                 self.logger.info("Next page URL is the same as current, stopping")
