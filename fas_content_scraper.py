@@ -89,6 +89,9 @@ class FASContentScraper:
             title_element = soup.find('h1')
             title = title_element.get_text().strip() if title_element else "No Title Found"
             
+            # Clean the title - remove newlines, multiple spaces, etc.
+            title = ' '.join(title.split())
+            
             # Extract content - adjust selectors based on the actual page structure
             # Looking for the main content area which might be in a div with a specific class
             content_element = soup.find('article') or soup.find('div', class_='content') or soup.find('div', class_='post-content')
@@ -101,12 +104,18 @@ class FASContentScraper:
                     if not any(cls in str(element.get('class', [])) for cls in ['navigation', 'meta', 'author', 'date']):
                         content_parts.append(element.get_text().strip())
                 
-                content = "\n\n".join(content_parts)
+                content = " ".join(content_parts)
             else:
                 # Fallback: get all paragraphs on the page
                 paragraphs = soup.find_all('p')
-                content = "\n\n".join(p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 50)
+                content = " ".join(p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 50)
             
+            # Clean up content - replace newlines, tabs, etc with spaces
+            content = content.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+            # Remove multiple spaces
+            while '  ' in content:
+                content = content.replace('  ', ' ')
+                
             return title, content
         
         except Exception as e:
@@ -160,7 +169,8 @@ class FASContentScraper:
                         
                     # Save after each successful extraction or every 5 publications
                     if index % 5 == 0 or index == end_index - 1:
-                        df.to_csv(self.csv_file, index=False)
+                        # Save with proper CSV handling to avoid issues with newlines
+                        df.to_csv(self.csv_file, index=False, quoting=csv.QUOTE_ALL, escapechar='\\')
                         logger.info(f"Saved progress to {self.csv_file}")
                         
                 except Exception as e:
@@ -169,7 +179,7 @@ class FASContentScraper:
                     continue
             
             # Final save
-            df.to_csv(self.csv_file, index=False)
+            df.to_csv(self.csv_file, index=False, quoting=csv.QUOTE_ALL, escapechar='\\')
             logger.info(f"Completed processing {end_index - start_index} URLs")
             
         except Exception as e:
