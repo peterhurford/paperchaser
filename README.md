@@ -73,13 +73,20 @@ The content scraper has two key parameters for working with large datasets:
 
 ##### Row-Based Processing
 
-The `--start` parameter refers to the row index in the CSV file (0-based, excluding header row). For example, if you have processed the first 29 rows (URLs) and want to continue from row 30:
+The `--start` parameter refers to the row index in the CSV file (0-based, excluding header row). This can be confusing, so here's a clear explanation:
+
+- The CSV has a header row (row 1 in the file)
+- Data begins at row 2 in the file
+- Index 0 refers to the first data row (row 2 in the file)
+- Index 79 refers to the 80th data row (row 81 in the file)
+
+For example, if you have processed the first 29 rows (URLs) and want to continue from row 30:
 
 ```bash
-python3 fas_content_scraper.py --start 30
+python3 fas_content_scraper.py --start 29
 ```
 
-This will start processing from the 31st URL in your CSV (index 30) and continue until the end.
+This will start processing from the 30th URL in your CSV (index 29, which is row 31 in the file including the header) and continue until the end.
 
 ##### Batch Processing
 
@@ -192,3 +199,37 @@ python3 fas_content_scraper.py --start 50 --batch 25 --min-delay 4 --max-delay 8
 - The content scraper handles newlines and special characters properly for CSV
 - CSVs are updated regularly after each batch, so interruptions won't lose much progress
 - The full archive has 446 pages, but default is limited to 53 pages
+
+### Troubleshooting
+
+#### Missing Dependencies
+
+If you see a `ModuleNotFoundError`, ensure all dependencies are installed:
+
+```bash
+pip install requests beautifulsoup4 pandas
+```
+
+#### Unprocessed URLs
+
+If specific URLs aren't being processed by the content scraper (such as line 81, URL "https://fas.org/publication/creating-a-national-exposome-project/"), try running:
+
+```bash
+python3 fas_content_scraper.py --start X --limit 1
+```
+
+where X is the 0-based index of the problematic URL (e.g., 79 for row 81 in the file, since row 1 is the header and indexing starts at 0).
+
+If a URL consistently fails to process, it may have a different HTML structure than what the content scraper is configured to handle. You can manually process these rare cases by:
+
+1. Running the content scraper with debugging enabled:
+   ```bash
+   python3 -m pdb fas_content_scraper.py --start X --limit 1
+   ```
+
+2. Or examining the page structure with a manual request:
+   ```bash
+   curl https://problematic-url | less
+   ```
+
+3. Then update the selectors in the `extract_content` method if needed.
